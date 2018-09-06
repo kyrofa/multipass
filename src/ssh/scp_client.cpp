@@ -100,47 +100,50 @@ void mp::SCPClient::pull_file(const std::string& source_path, const std::string&
     SCPUPtr scp{make_scp_session(*ssh_session, SSH_SCP_READ, source_path.c_str())};
     SSH::throw_on_error(ssh_scp_init, scp);
 
-    auto r = ssh_scp_pull_request(scp.get());
+    int r;
 
-    if (r != SSH_SCP_REQUEST_NEWFILE)
-        throw std::runtime_error("Error receiving information for file");
-
-    auto size = ssh_scp_request_get_size(scp.get());
-    std::string filename{ssh_scp_request_get_filename(scp.get())};
-
-    auto total{0u};
-    const auto len{65536u};
-    std::vector<char> data;
-    data.reserve(len);
-
-    auto full_destination_path{destination_path};
-    if (full_destination_path.empty())
+    while ((r = ssh_scp_pull_request(scp.get())) != SSH_SCP_REQUEST_EOF)
     {
-        full_destination_path = filename;
+        if (r == SSH_ERROR || r == SSH_SCP_REQUEST_WARNING)
+            throw std::runtime_error("Error receiving information for file: " + std::string(ssh_get_error(scp.get())));
+
+        auto size = ssh_scp_request_get_size(scp.get());
+        std::string filename{ssh_scp_request_get_filename(scp.get())};
+
+        auto total{0u};
+        const auto len{65536u};
+        std::vector<char> data;
+        data.reserve(len);
+
+        auto full_destination_path{destination_path};
+        if (full_destination_path.empty())
+        {
+            full_destination_path = filename;
+        }
+        else if (QFileInfo(QString::fromStdString(destination_path)).isDir())
+        {
+            full_destination_path.append("/" + filename);
+        }
+
+        QFile destination(QString::fromStdString(full_destination_path));
+        if (!destination.open(QIODevice::WriteOnly))
+            throw std::runtime_error("Error opening file for writing: " + destination.errorString().toStdString());
+
+        SSH::throw_on_error(ssh_scp_accept_request, scp);
+
+        do
+        {
+            r = ssh_scp_read(scp.get(), data.data(), len);
+
+            if (r == 0)
+                break;
+
+            if (destination.write(data.data(), r) == -1)
+                throw std::runtime_error("Error writing to file: " + destination.errorString().toStdString());
+
+            total += r;
+        } while (total < size);
     }
-    else if (QFileInfo(QString::fromStdString(destination_path)).isDir())
-    {
-        full_destination_path.append("/" + filename);
-    }
-
-    QFile destination(QString::fromStdString(full_destination_path));
-    if (!destination.open(QIODevice::WriteOnly))
-        throw std::runtime_error("Error opening file for writing: " + destination.errorString().toStdString());
-
-    SSH::throw_on_error(ssh_scp_accept_request, scp);
-
-    do
-    {
-        r = ssh_scp_read(scp.get(), data.data(), len);
-
-        if (r == 0)
-            break;
-
-        if (destination.write(data.data(), r) == -1)
-            throw std::runtime_error("Error writing to file: " + destination.errorString().toStdString());
-
-        total += r;
-    } while (total < size);
 
     SSH::throw_on_error(ssh_scp_close, scp);
 }
